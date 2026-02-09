@@ -1,0 +1,23 @@
+{
+  "name": "bluetooth-beacon",
+  "version": "1.0.0",
+  "description": "Bluetooth device presence tracker with notifications",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron .",
+    "rebuild": "electron-rebuild -f -w @abandonware/noble"
+  },
+  "author": "Duncan Hardie",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-rebuild": "^3.2.9"
+  },
+  "dependencies": {
+    "@abandonware/noble": "^1.9.2-24",
+    "cors": "^2.8.6",
+    "electron-store": "^8.1.0",
+    "express": "^4.22.1"
+  }
+}

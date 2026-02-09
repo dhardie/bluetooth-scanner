@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Bluetooth Beacon Scanner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="titlebar"></div>
+  
+  <div class="container">
+    <header>
+      <h1>🔵 Bluetooth Scanner</h1>
+      <div class="status-bar">
+        <span id="bluetooth-status" class="status">Initializing...</span>
+        <button id="scan-toggle" class="btn btn-primary">Start Scan</button>
+      </div>
+    </header>
+    
+    <nav class="tabs">
+      <button class="tab active" data-tab="devices" title="Hotkey: 1">Nearby Devices <kbd>1</kbd></button>
+      <button class="tab" data-tab="whitelist" title="Hotkey: 2">🔔 Whitelist <kbd>2</kbd></button>
+      <button class="tab" data-tab="greylist" title="Hotkey: 3">📝 Greylist <kbd>3</kbd></button>
+      <button class="tab" data-tab="blacklist" title="Hotkey: 4">🚫 Blacklist <kbd>4</kbd></button>
+      <button class="tab" data-tab="log" title="Hotkey: 5">Activity <kbd>5</kbd></button>
+      <button class="tab" data-tab="settings" title="Hotkey: 6">Settings <kbd>6</kbd></button>
+    </nav>
+    
+    <main>
+      <!-- Nearby Devices Tab -->
+      <section id="devices-tab" class="tab-content active">
+        <div class="section-header">
+          <h2>Discovered Devices</h2>
+          <div class="header-actions">
+            <span id="device-count">0 devices</span>
+            <button class="btn btn-secondary btn-small" id="toggle-bulk">☑️ Bulk Select</button>
+            <button class="btn btn-secondary btn-small tab-refresh" data-refresh="devices" title="Refresh device list">🔄</button>
+          </div>
+        </div>
+        <!-- Bulk Action Bar (shown when in bulk mode) -->
+        <div id="bulk-actions" class="bulk-action-bar hidden">
+          <div class="bulk-left">
+            <button class="btn btn-small btn-secondary" id="select-all">☑️ Select All</button>
+            <span id="selected-count">0 selected</span>
+          </div>
+          <div class="bulk-right">
+            <span class="bulk-label">Add selected to:</span>
+            <button class="btn btn-success" id="bulk-whitelist">🔔 Whitelist</button>
+            <button class="btn btn-warning" id="bulk-greylist">📝 Greylist</button>
+            <button class="btn btn-danger" id="bulk-blacklist">🚫 Blacklist</button>
+            <button class="btn btn-secondary" id="bulk-cancel">✕ Cancel</button>
+          </div>
+        </div>
+        <div id="device-list" class="device-list">
+          <p class="empty-state">No devices discovered yet. Start scanning to find nearby Bluetooth devices.</p>
+        </div>
+        <div class="list-legend">
+          <span class="legend-item"><span class="dot whitelist"></span> Whitelist (notifications)</span>
+          <span class="legend-item"><span class="dot greylist"></span> Greylist (log only)</span>
+          <span class="legend-item"><span class="dot blacklist"></span> Blacklist (hidden)</span>
+        </div>
+      </section>
+      
+      <!-- Whitelist Tab -->
+      <section id="whitelist-tab" class="tab-content">
+        <div class="section-header">
+          <h2>🔔 Whitelist</h2>
+          <span class="list-description">Devices that trigger notifications when they connect/disconnect</span>
+          <button class="btn btn-secondary btn-small tab-refresh" data-refresh="whitelist" title="Refresh whitelist">🔄</button>
+        </div>
+        <div class="list-count"><span id="whitelist-count">0</span> devices</div>
+        <div id="whitelist-list" class="device-list">
+          <p class="empty-state">No devices on whitelist. Add devices from Nearby Devices tab.</p>
+        </div>
+      </section>
+      
+      <!-- Greylist Tab -->
+      <section id="greylist-tab" class="tab-content">
+        <div class="section-header">
+          <h2>📝 Greylist</h2>
+          <span class="list-description">Devices that are logged but don't trigger notifications</span>
+          <button class="btn btn-secondary btn-small tab-refresh" data-refresh="greylist" title="Refresh greylist">🔄</button>
+        </div>
+        <div class="list-count"><span id="greylist-count">0</span> devices</div>
+        <div id="greylist-list" class="device-list">
+          <p class="empty-state">No devices on greylist.</p>
+        </div>
+      </section>
+      
+      <!-- Blacklist Tab -->
+      <section id="blacklist-tab" class="tab-content">
+        <div class="section-header">
+          <h2>🚫 Blacklist</h2>
+          <span class="list-description">Devices completely hidden from scan results</span>
+          <button class="btn btn-secondary btn-small tab-refresh" data-refresh="blacklist" title="Refresh blacklist">🔄</button>
+        </div>
+        <div class="list-count"><span id="blacklist-count">0</span> devices</div>
+        <div id="blacklist-list" class="device-list">
+          <p class="empty-state">No devices blacklisted.</p>
+        </div>
+      </section>
+      
+      <!-- Activity Log Tab -->
+      <section id="log-tab" class="tab-content">
+        <div class="section-header">
+          <h2>Activity Log</h2>
+          <div class="header-actions">
+            <button class="btn btn-secondary btn-small tab-refresh" data-refresh="log" title="Refresh activity log">🔄</button>
+            <button id="clear-log" class="btn btn-secondary btn-small">Clear Log</button>
+          </div>
+        </div>
+        <div id="activity-log" class="log-list">
+          <p class="empty-state">No activity recorded yet.</p>
+        </div>
+      </section>
+      
+      <!-- Settings Tab -->
+      <section id="settings-tab" class="tab-content">
+        <h2>Settings</h2>
+        
+        <div class="settings-section">
+          <h3>📍 Location</h3>
+          <div class="current-location">
+            <span>Current: </span>
+            <strong id="current-location-name">Unknown</strong>
+            <span class="coords-badge" id="current-wifi"></span>
+            <button class="btn btn-small btn-link" onclick="refreshLocation()">🔄 Refresh</button>
+          </div>
+          
+          <div id="location-list" class="location-list"></div>
+          
+          <div class="add-location-form">
+            <input type="text" id="new-location-name" placeholder="Location name (e.g., Home, Office, French House)">
+            <input type="number" id="new-location-radius" placeholder="Radius km" value="5" min="0.1" max="100" step="0.5" style="width: 80px;">
+            <button class="btn btn-primary btn-small" id="add-location-btn">📍 Save Current Location</button>
+          </div>
+          
+          <div class="wifi-setup">
+            <p class="hint">Locations are detected via IP geolocation. Save your current location and set a radius (in km) - when you're within that radius, this location will be auto-detected.</p>
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <h3>⚙️ Scanning</h3>
+          <div class="settings-form">
+            <div class="setting-item">
+              <label for="scan-interval">Scan Interval (seconds)</label>
+              <input type="number" id="scan-interval" min="5" max="60" value="10">
+            </div>
+            <div class="setting-item">
+              <label for="offline-threshold">Offline Threshold (seconds)</label>
+              <input type="number" id="offline-threshold" min="10" max="300" value="30">
+            </div>
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <h3>🔔 Notifications</h3>
+          <div class="settings-form">
+            <div class="setting-item">
+              <label for="notifications-enabled">
+                <input type="checkbox" id="notifications-enabled" checked>
+                Enable Notifications (whitelist only)
+              </label>
+            </div>
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <h3>🖥️ App Behavior</h3>
+          <div class="settings-form">
+            <div class="setting-item">
+              <label for="start-minimized">
+                <input type="checkbox" id="start-minimized">
+                Start minimized (menu bar only)
+              </label>
+            </div>
+            <div class="setting-item">
+              <label for="minimize-to-tray">
+                <input type="checkbox" id="minimize-to-tray" checked>
+                Minimize to menu bar when closing window
+              </label>
+            </div>
+          </div>
+        </div>
+        
+        <button id="save-settings" class="btn btn-primary">Save Settings</button>
+      </section>
+    </main>
+  </div>
+  
+  <script src="app.js"></script>
+</body>
+</html>
