@@ -65,6 +65,8 @@ pub async fn add_to_list(
     device_name: String,
     list_type: String,
 ) -> Result<Lists, String> {
+    println!("[RUST] add_to_list called: device_id={}, device_name={}, list_type={}", device_id, device_name, list_type);
+    
     let now = now_ms();
     
     let mut data = state.0.store_data.write().await;
@@ -76,23 +78,35 @@ pub async fn add_to_list(
     
     // Add to specified list
     let entry = DeviceEntry {
-        name: device_name,
+        name: device_name.clone(),
         added_at: now,
         last_seen: None,
         online: false,
     };
     
     match list_type.as_str() {
-        "blacklist" => { data.lists.blacklist.insert(device_id, entry); }
-        "greylist" => { data.lists.greylist.insert(device_id, entry); }
-        "whitelist" => { data.lists.whitelist.insert(device_id, entry); }
+        "blacklist" => { 
+            data.lists.blacklist.insert(device_id.clone(), entry); 
+            println!("[RUST] Added to blacklist. Blacklist now has {} items", data.lists.blacklist.len());
+        }
+        "greylist" => { data.lists.greylist.insert(device_id.clone(), entry); }
+        "whitelist" => { data.lists.whitelist.insert(device_id.clone(), entry); }
         _ => return Err(format!("Invalid list type: {}", list_type)),
     }
     
     let lists = data.lists.clone();
-    store::save_store(&state.0.store_path, &data).map_err(|e| e.to_string())?;
+    
+    println!("[RUST] Saving store to {:?}", state.0.store_path);
+    match store::save_store(&state.0.store_path, &data) {
+        Ok(_) => println!("[RUST] Store saved successfully"),
+        Err(e) => {
+            println!("[RUST] Store save FAILED: {}", e);
+            return Err(e);
+        }
+    }
     drop(data);
     
+    println!("[RUST] Emitting lists-updated event");
     let _ = handle.emit("lists-updated", &lists);
     Ok(lists)
 }

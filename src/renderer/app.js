@@ -177,6 +177,26 @@ function setupEventListeners() {
     renderActivityLog();
   });
   
+  // Unhide All - clear the entire blacklist
+  document.getElementById('unhide-all').addEventListener('click', async () => {
+    const count = Object.keys(lists.blacklist || {}).length;
+    if (count === 0) {
+      alert('No hidden devices to unhide.');
+      return;
+    }
+    if (!confirm(`Unhide all ${count} hidden devices? They will reappear in Nearby.`)) return;
+    
+    // Remove each device from blacklist
+    for (const deviceId of Object.keys(lists.blacklist)) {
+      await window.api.removeFromList(deviceId, 'blacklist');
+    }
+    
+    lists = await window.api.getLists();
+    updateTabBadges();
+    renderList('blacklist');
+    doRenderDevices();
+  });
+  
   // Bulk mode toggle
   toggleBulkBtn.addEventListener('click', () => {
     bulkMode = !bulkMode;
@@ -380,6 +400,8 @@ function setupEventListeners() {
   });
   
   window.api.onListsUpdated((newLists) => {
+    console.log('[EVENT] lists-updated received:', newLists);
+    console.log('[EVENT] Blacklist in event:', Object.keys(newLists.blacklist || {}));
     lists = newLists;
     renderList('whitelist');
     renderList('greylist');
@@ -763,13 +785,26 @@ function renderList(listType) {
       }
     }
     
+    // Simpler UI for blacklist - just show Unhide button
+    if (listType === 'blacklist') {
+      return `
+        <div class="device-item">
+          <div class="device-info">
+            <div class="device-name">${escapeHtml(device.name)}</div>
+            <div class="device-meta">ID: ${id.slice(0, 12)}... | Hidden on: ${new Date(device.addedAt || Date.now()).toLocaleDateString()}</div>
+          </div>
+          <div class="device-actions">
+            <button class="btn btn-success btn-small" data-action="remove" data-id="${id}" data-list="blacklist">👁️ Unhide</button>
+          </div>
+        </div>
+      `;
+    }
+    
     return `
       <div class="device-item ${device.online ? 'online' : ''}">
-        ${listType !== 'blacklist' ? `
-          <div class="device-status">
-            <span class="status-indicator ${device.online ? 'online' : 'offline'}"></span>
-          </div>
-        ` : ''}
+        <div class="device-status">
+          <span class="status-indicator ${device.online ? 'online' : 'offline'}"></span>
+        </div>
         <div class="device-info">
           <div class="device-name">
             <input type="text" value="${escapeHtml(device.name)}" 
@@ -1109,7 +1144,7 @@ function updateSelectedCount() {
 
 // Actions
 async function addToList(deviceId, deviceName, listType) {
-  console.log(`Adding ${deviceId} to ${listType}`);
+  console.log(`[ADD TO LIST] deviceId=${deviceId}, deviceName=${deviceName}, listType=${listType}`);
   
   // IMMEDIATELY remove from local array if blacklisting
   if (listType === 'blacklist') {
@@ -1117,17 +1152,27 @@ async function addToList(deviceId, deviceName, listType) {
     // Also add to local blacklist immediately
     lists.blacklist[deviceId] = { name: deviceName, addedAt: Date.now() };
     doRenderDevices();
+    updateTabBadges();
+    renderList('blacklist');
   }
   
   // Then do the API call
   try {
-    await window.api.addToList(deviceId, deviceName, listType);
+    console.log('[API CALL] Calling window.api.addToList...');
+    const result = await window.api.addToList(deviceId, deviceName, listType);
+    console.log('[API RESULT]', result);
   } catch (e) {
-    console.error('API addToList failed:', e);
+    console.error('[API ERROR] addToList failed:', e);
+    alert(`Error saving to ${listType}: ${e}`);
+    return; // Don't continue if save failed
   }
   
-  // Refresh lists from backend
+  // Refresh lists from backend to confirm save
+  console.log('[REFRESH] Getting fresh lists from backend...');
   lists = await window.api.getLists();
+  console.log('[REFRESH RESULT] Blacklist now has:', Object.keys(lists.blacklist || {}).length, 'devices');
+  console.log('[REFRESH RESULT] Blacklist contents:', lists.blacklist);
+  
   updateTabBadges();
   doRenderDevices();
   renderList(listType);

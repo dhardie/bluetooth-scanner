@@ -92,13 +92,16 @@
       <!-- Blacklist Tab -->
       <section id="blacklist-tab" class="tab-content">
         <div class="section-header">
-          <h2>🚫 Blacklist</h2>
-          <span class="list-description">Devices completely hidden from scan results</span>
-          <button class="btn btn-secondary btn-small tab-refresh" data-refresh="blacklist" title="Refresh blacklist">🔄</button>
+          <h2>🚫 Hidden Devices</h2>
+          <div class="header-actions">
+            <button class="btn btn-secondary btn-small tab-refresh" data-refresh="blacklist" title="Refresh">🔄</button>
+            <button id="unhide-all" class="btn btn-success btn-small">👁️ Unhide All</button>
+          </div>
         </div>
-        <div class="list-count"><span id="blacklist-count">0</span> devices</div>
+        <span class="list-description">These devices are hidden from the Nearby list. Click "Unhide" to show them again.</span>
+        <div class="list-count"><span id="blacklist-count">0</span> hidden devices</div>
         <div id="blacklist-list" class="device-list">
-          <p class="empty-state">No devices blacklisted.</p>
+          <p class="empty-state">No hidden devices. Devices you hide from Nearby will appear here.</p>
         </div>
       </section>
       
