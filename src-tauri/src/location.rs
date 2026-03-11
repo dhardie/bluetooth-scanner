@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tauri::Emitter;
 use crate::models::{AppState, Coords};
 use crate::store;
 

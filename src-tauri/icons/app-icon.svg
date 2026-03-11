@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#8B5CF6"/>
+      <stop offset="50%" style="stop-color:#EC4899"/>
+      <stop offset="100%" style="stop-color:#F59E0B"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="15" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+  <!-- Radar rings -->
+  <circle cx="512" cy="512" r="350" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+  <circle cx="512" cy="512" r="260" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="2"/>
+  <circle cx="512" cy="512" r="170" fill="none" stroke="rgba(255,255,255,0.24)" stroke-width="2"/>
+  <!-- Central hub -->
+  <circle cx="512" cy="512" r="80" fill="white" filter="url(#glow)"/>
+  <circle cx="512" cy="512" r="45" fill="#7C3AED"/>
+  <!-- Detected devices -->
+  <circle cx="320" cy="360" r="32" fill="white" opacity="0.92"/>
+  <circle cx="720" cy="400" r="26" fill="white" opacity="0.85"/>
+  <circle cx="350" cy="680" r="20" fill="white" opacity="0.75"/>
+  <circle cx="700" cy="660" r="28" fill="white" opacity="0.88"/>
+  <circle cx="240" cy="530" r="16" fill="#10B981" opacity="0.9"/>
+  <!-- Connection lines -->
+  <line x1="512" y1="512" x2="320" y2="360" stroke="white" stroke-width="2.5" opacity="0.4"/>
+  <line x1="512" y1="512" x2="720" y2="400" stroke="white" stroke-width="2.5" opacity="0.4"/>
+  <line x1="512" y1="512" x2="700" y2="660" stroke="white" stroke-width="2.5" opacity="0.4"/>
+  <line x1="512" y1="512" x2="240" y2="530" stroke="#10B981" stroke-width="3" opacity="0.6"/>
+</svg>

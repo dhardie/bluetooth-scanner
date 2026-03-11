@@ -3,3 +3,30 @@ dist/
 .DS_Store
 *.log
 config.json
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+target/
+Cargo.lock
+
+# Generated schemas
+src-tauri/gen/
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build outputs
+*.app
+*.dmg
+*.exe
+*.msi
+*.deb
+*.rpm
+*.AppImage

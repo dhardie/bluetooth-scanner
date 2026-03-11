@@ -152,6 +152,7 @@ async function init() {
   renderList('blacklist');
   renderActivityLog();
   renderLocations();
+  updateTabBadges();
   
   // Set up event listeners
   setupEventListeners();
@@ -342,14 +343,18 @@ function setupEventListeners() {
   
   // Handle batched device updates — now receives aggregated data from main
   window.api.onDeviceBatchUpdate && window.api.onDeviceBatchUpdate((updates) => {
+    // Filter out any blacklisted devices from incoming updates
+    const filtered = updates.filter(d => !lists.blacklist[d.id]);
+    
     // If updates contain group summaries, replace the full device list
-    const hasGroups = updates.some(u => u.isGroup);
+    const hasGroups = filtered.some(u => u.isGroup);
     if (hasGroups) {
-      // Full aggregated update — replace everything
-      discoveredDevices = updates;
+      // Full aggregated update — replace everything (but keep blacklist filter)
+      discoveredDevices = filtered;
     } else {
-      // Individual updates (legacy path)
-      for (const device of updates) {
+      // Individual updates (legacy path) — skip blacklisted
+      for (const device of filtered) {
+        if (lists.blacklist[device.id]) continue;
         const idx = discoveredDevices.findIndex(d => d.id === device.id);
         if (idx >= 0) {
           discoveredDevices[idx] = device;
@@ -380,6 +385,7 @@ function setupEventListeners() {
     renderList('greylist');
     renderList('blacklist');
     renderDevices();
+    updateTabBadges();
   });
 }
 
@@ -390,36 +396,45 @@ function getDeviceListType(deviceId) {
   return null;
 }
 
+// Update tab badge counts
+function updateTabBadges() {
+  const whitelistBadge = document.getElementById('tab-whitelist-count');
+  const greylistBadge = document.getElementById('tab-greylist-count');
+  const blacklistBadge = document.getElementById('tab-blacklist-count');
+  
+  const wCount = Object.keys(lists.whitelist || {}).length;
+  const gCount = Object.keys(lists.greylist || {}).length;
+  const bCount = Object.keys(lists.blacklist || {}).length;
+  
+  if (whitelistBadge) whitelistBadge.textContent = wCount > 0 ? wCount : '';
+  if (greylistBadge) greylistBadge.textContent = gCount > 0 ? gCount : '';
+  if (blacklistBadge) blacklistBadge.textContent = bCount > 0 ? bCount : '';
+}
+
 // Track collapsed state for unknown devices and grouped devices
 let unknownCollapsed = true;
 let expandedGroups = new Set();  // Groups start COLLAPSED, track which are EXPANDED
 let renderPending = false;
 let lastRenderTime = 0;
+let rafId = null;
 
-// Throttled render to prevent UI thrashing
+// Fast reactive render using requestAnimationFrame
 function scheduleRender() {
-  if (renderPending) return;
+  // Skip if already scheduled
+  if (rafId) return;
   
-  // Skip rendering if devices tab isn't visible (prevents UI lockup on other tabs)
+  // Skip rendering if devices tab isn't visible
   const devicesTab = document.getElementById('devices-tab');
   if (devicesTab && !devicesTab.classList.contains('active')) {
-    renderPending = true; // Mark dirty, will render when tab is shown
+    renderPending = true;
     return;
   }
   
-  const now = Date.now();
-  const timeSinceLastRender = now - lastRenderTime;
-  
-  // Throttle to max 2 renders per second
-  if (timeSinceLastRender < 500) {
-    renderPending = true;
-    setTimeout(() => {
-      renderPending = false;
-      doRenderDevices();
-    }, 500 - timeSinceLastRender);
-  } else {
+  rafId = requestAnimationFrame(() => {
+    rafId = null;
+    renderPending = false;
     doRenderDevices();
-  }
+  });
 }
 
 function renderDevices() {
@@ -431,10 +446,21 @@ let deviceRenderLimit = DEVICE_RENDER_LIMIT;
 
 function doRenderDevices() {
   lastRenderTime = Date.now();
-  // Devices now come pre-aggregated from main process
-  // Groups have: { isGroup: true, groupId, deviceCount, rssiRange, ... }
-  // Individual devices are normal objects
-  const devices = discoveredDevices.filter(d => !lists.blacklist[d.id]);
+  
+  // Debug: show what's in blacklist
+  const blacklistIds = Object.keys(lists.blacklist || {});
+  console.log(`Rendering. Blacklist has ${blacklistIds.length} IDs:`, blacklistIds);
+  
+  // Filter out blacklisted devices
+  const devices = discoveredDevices.filter(d => {
+    const isBlacklisted = !!lists.blacklist[d.id];
+    if (isBlacklisted) {
+      console.log(`FILTERED OUT blacklisted device: ${d.id}`);
+    }
+    return !isBlacklisted;
+  });
+  
+  console.log(`After filter: ${devices.length} of ${discoveredDevices.length} devices shown`);
   
   const groups = devices.filter(d => d.isGroup);
   const individuals = devices.filter(d => !d.isGroup);
@@ -1083,40 +1109,82 @@ function updateSelectedCount() {
 
 // Actions
 async function addToList(deviceId, deviceName, listType) {
-  lists = await window.api.addToList(deviceId, deviceName, listType);
-  renderDevices();
+  console.log(`Adding ${deviceId} to ${listType}`);
+  
+  // IMMEDIATELY remove from local array if blacklisting
+  if (listType === 'blacklist') {
+    discoveredDevices = discoveredDevices.filter(d => d.id !== deviceId);
+    // Also add to local blacklist immediately
+    lists.blacklist[deviceId] = { name: deviceName, addedAt: Date.now() };
+    doRenderDevices();
+  }
+  
+  // Then do the API call
+  try {
+    await window.api.addToList(deviceId, deviceName, listType);
+  } catch (e) {
+    console.error('API addToList failed:', e);
+  }
+  
+  // Refresh lists from backend
+  lists = await window.api.getLists();
+  updateTabBadges();
+  doRenderDevices();
   renderList(listType);
 }
 
 async function removeFromList(deviceId, listType) {
-  lists = await window.api.removeFromList(deviceId, listType);
-  renderDevices();
+  const result = await window.api.removeFromList(deviceId, listType);
+  // Force refresh
+  lists = await window.api.getLists();
+  updateTabBadges();
+  doRenderDevices();
   renderList(listType);
 }
 
 async function moveToList(deviceId, fromList, toList) {
-  lists = await window.api.moveToList(deviceId, fromList, toList);
+  const result = await window.api.moveToList(deviceId, fromList, toList);
+  // Force refresh
+  lists = await window.api.getLists();
+  updateTabBadges();
   renderList(fromList);
   renderList(toList);
-  renderDevices();
+  doRenderDevices();
 }
 
 async function bulkAddToList(listType) {
   if (selectedDevices.size === 0) return;
   
+  // Get individual devices only (not groups)
   const devices = discoveredDevices
-    .filter(d => selectedDevices.has(d.id))
+    .filter(d => selectedDevices.has(d.id) && !d.isGroup)
     .map(d => ({ id: d.id, name: d.name }));
   
-  lists = await window.api.bulkAddToList(devices, listType);
+  if (devices.length === 0) {
+    alert('No individual devices selected. Groups cannot be bulk-added.');
+    return;
+  }
+  
+  console.log(`Bulk adding ${devices.length} devices to ${listType}:`, devices);
+  
+  await window.api.bulkAddToList(devices, listType);
+  
+  // Force refresh lists from backend
+  lists = await window.api.getLists();
+  console.log('Fresh lists after bulk:', lists);
+  console.log('Blacklist now has:', Object.keys(lists.blacklist || {}).length, 'items');
   
   // Exit bulk mode
   bulkMode = false;
   selectedDevices.clear();
   bulkActions.classList.add('hidden');
   toggleBulkBtn.textContent = '☑️ Bulk Select';
+  toggleBulkBtn.classList.remove('btn-primary');
+  toggleBulkBtn.classList.add('btn-secondary');
   
-  renderDevices();
+  // Force full UI refresh
+  updateTabBadges();
+  doRenderDevices();
   renderList(listType);
 }
 
@@ -1138,5 +1206,19 @@ window.removeFromList = removeFromList;
 window.moveToList = moveToList;
 window.updateDeviceName = updateDeviceName;
 
-// Start the app
-init();
+// Start the app - wait for Tauri bridge to be ready
+function startApp() {
+  if (window.api) {
+    init();
+  } else {
+    console.log('Waiting for Tauri bridge...');
+    window.addEventListener('tauri-bridge-ready', init, { once: true });
+  }
+}
+
+// Wait for DOM ready, then start
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startApp);
+} else {
+  startApp();
+}
