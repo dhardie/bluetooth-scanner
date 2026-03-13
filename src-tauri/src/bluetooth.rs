@@ -5,7 +5,7 @@ use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, CentralE
 use btleplug::platform::Manager;
 use futures::StreamExt;
 use tauri::Emitter;
-use crate::models::{AppState, DeviceInfo, DeviceState, RssiReading, SseMessage};
+use crate::models::{AppState, DeviceInfo, DeviceState, RssiReading};
 use crate::store;
 
 // OUI manufacturer prefixes (first 3 bytes of MAC)
@@ -233,13 +233,32 @@ async fn handle_device_event(
     // Store device
     state.discovered_devices.write().await.insert(device_id.clone(), device_info.clone());
 
-    // Track RSSI history
+    // Track RSSI history (in-memory, ring buffer of 60 readings)
     {
         let mut history = state.rssi_history.write().await;
         let readings = history.entry(device_id.clone()).or_insert_with(Vec::new);
         readings.push(RssiReading { rssi, timestamp: now });
-        if readings.len() > 30 {
-            *readings = readings[readings.len()-30..].to_vec();
+        if readings.len() > 60 {
+            *readings = readings[readings.len()-60..].to_vec();
+        }
+    }
+
+    // Persist RSSI to SQLite every ~10 readings (throttled)
+    // Save every time for whitelist/greylist, every 10th reading for others
+    {
+        let history = state.rssi_history.read().await;
+        let reading_count = history.get(&device_id).map(|r| r.len()).unwrap_or(0);
+        let should_persist = list_type.as_deref().map_or(false, |lt| lt == "whitelist" || lt == "greylist")
+            || reading_count % 10 == 0;
+        
+        if should_persist {
+            let db_path = state.store_path.clone();
+            let did = device_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store::save_rssi_reading(&db_path, &did, rssi, now) {
+                    log::warn!("Failed to persist RSSI reading: {}", e);
+                }
+            });
         }
     }
 
@@ -295,12 +314,6 @@ async fn handle_device_event(
             }
         }
     }
-
-    // Broadcast SSE
-    let _ = state.sse_tx.send(SseMessage {
-        event_type: "device".to_string(),
-        data: serde_json::to_value(&device_info).unwrap_or_default(),
-    });
 }
 
 /// Check for devices that have gone offline.
@@ -418,7 +431,7 @@ pub async fn get_aggregated_devices(state: &Arc<AppState>) -> Vec<serde_json::Va
 
         if is_listed {
             listed.push(serde_json::to_value(device).unwrap_or_default());
-        } else if device.name == "Apple Device" {
+        } else if device.name == "Apple Device" || device.name.starts_with("Apple Device (") {
             if device.rssi > -70 {
                 apple_close.push(device);
             } else if device.rssi > -85 {

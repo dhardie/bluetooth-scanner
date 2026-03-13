@@ -6,45 +6,66 @@ pub mod store;
 pub mod location;
 pub mod bluetooth;
 pub mod commands;
-pub mod api_server;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::collections::HashMap;
 use tauri::{Manager, Emitter};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{TrayIcon, TrayIconBuilder, MouseButton, MouseButtonState};
+use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState};
 use tauri_plugin_autostart::MacosLauncher;
-use tokio::sync::{broadcast, RwLock};
+use tauri_plugin_log::{Target, TargetKind, RotationStrategy};
+use tokio::sync::RwLock;
 
 use models::{AppState, ManagedState, StoreData};
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::new()
+            .targets([
+                Target::new(TargetKind::Stdout),
+                Target::new(TargetKind::LogDir { file_name: Some("bluetooth-scanner".to_string()) }),
+                Target::new(TargetKind::Webview),
+            ])
+            .level(log::LevelFilter::Info)
+            .level_for("btleplug", log::LevelFilter::Warn)
+            .rotation_strategy(RotationStrategy::KeepAll)
+            .max_file_size(5 * 1024 * 1024) // 5 MB
+            .build()
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
         ))
         .setup(|app| {
-            // Initialize store path
             let app_dir = app.path().app_data_dir().expect("Failed to get app data dir");
             std::fs::create_dir_all(&app_dir).ok();
-            let store_path = app_dir.join("store.json");
+            
+            // DB path (SQLite)
+            let db_path = app_dir.join("bluetooth-scanner.db");
+            
+            // Migrate from JSON if needed
+            let json_path = app_dir.join("store.json");
+            if json_path.exists() {
+                if let Err(e) = store::migrate_from_json(&json_path, &db_path) {
+                    log::warn!("Migration from JSON failed: {}", e);
+                }
+            }
 
-            // Load or create store
-            let store_data = store::load_store(&store_path).unwrap_or_else(|e| {
+            // Load or create store from SQLite
+            let store_data = store::load_store(&db_path).unwrap_or_else(|e| {
                 log::warn!("Failed to load store: {}, creating new", e);
                 StoreData::default()
             });
 
-            // Create SSE broadcast channel
-            let (sse_tx, _) = broadcast::channel(100);
-
-            // Build shared state
+            // Build shared state (no more SSE broadcast needed)
             let state = Arc::new(AppState {
-                store_path,
+                store_path: db_path.clone(),
                 store_data: RwLock::new(store_data),
                 discovered_devices: RwLock::new(HashMap::new()),
                 device_states: RwLock::new(HashMap::new()),
@@ -55,7 +76,6 @@ pub fn run() {
                 adapter: RwLock::new(None),
                 companion_history: RwLock::new(HashMap::new()),
                 co_location_history: RwLock::new(HashMap::new()),
-                sse_tx,
             });
 
             // Manage state
@@ -86,12 +106,17 @@ pub fn run() {
                     location::detect_location_loop(loc_state, loc_handle).await;
                 });
 
-                // Start HTTP API server
-                let api_state = state_clone.clone();
+                // Start periodic device broadcast (every 3 seconds)
+                let broadcast_state = state_clone.clone();
+                let broadcast_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = api_server::start_api_server(api_state).await {
-                        log::error!("API server error: {}", e);
-                    }
+                    run_device_broadcast(broadcast_state, broadcast_handle).await;
+                });
+
+                // Start daily cleanup task
+                let cleanup_path = state_clone.store_path.clone();
+                tauri::async_runtime::spawn(async move {
+                    run_daily_cleanup(cleanup_path).await;
                 });
             });
 
@@ -109,7 +134,7 @@ pub fn run() {
                 });
             }
 
-            log::info!("Bluetooth Scanner started");
+            log::info!("Bluetooth Scanner started - SQLite storage active");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -141,15 +166,50 @@ pub fn run() {
             commands::update_location,
             commands::remove_location,
             commands::refresh_location,
+            // Analytics & Stats
+            commands::get_device_stats,
+            commands::get_all_device_stats,
+            commands::get_rssi_history,
+            commands::get_companions,
+            commands::get_analytics_summary,
+            // Export
+            commands::export_activity_log_csv,
+            commands::export_devices_json,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
 }
 
+/// Broadcast aggregated device list every 3 seconds
+async fn run_device_broadcast(state: Arc<AppState>, app_handle: tauri::AppHandle) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+    loop {
+        interval.tick().await;
+        let devices = bluetooth::get_aggregated_devices(&state).await;
+        let _ = app_handle.emit("device-batch-update", &devices);
+    }
+}
+
+/// Run cleanup tasks every 24 hours
+async fn run_daily_cleanup(db_path: std::path::PathBuf) {
+    // First cleanup after 1 hour of uptime
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    loop {
+        if let Err(e) = store::cleanup_old_data(&db_path) {
+            log::warn!("Cleanup failed: {}", e);
+        } else {
+            log::info!("Daily cleanup completed");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let scan_toggle = MenuItem::with_id(app, "scan_toggle", "Toggle Scanning", true, None::<&str>)?;
+    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&show, &scan_toggle, &separator, &quit])?;
 
     let _tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().cloned().expect("no icon"))
@@ -158,6 +218,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
                 "quit" => {
+                    log::info!("Quit from tray menu");
                     std::process::exit(0);
                 }
                 "show" => {
@@ -165,6 +226,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
+                }
+                "scan_toggle" => {
+                    let _ = app.emit("tray-scan-toggle", ());
                 }
                 _ => {}
             }

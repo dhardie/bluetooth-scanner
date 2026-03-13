@@ -12,17 +12,17 @@
       {
         "label": "main",
         "title": "Bluetooth Scanner",
-        "width": 900,
-        "height": 650,
-        "minWidth": 700,
-        "minHeight": 500,
+        "width": 1100,
+        "height": 700,
+        "minWidth": 800,
+        "minHeight": 550,
         "decorations": false,
         "visible": true,
         "closable": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: asset: https://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self' tauri: asset: https://asset.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -36,5 +36,24 @@
       "icons/icon.ico"
     ],
     "macOS": {}
+  },
+  "plugins": {
+    "log": {
+      "level": "info",
+      "targets": [
+        {
+          "kind": "stdout"
+        },
+        {
+          "kind": "file",
+          "path": "bluetooth-scanner.log",
+          "maxFileSize": 5242880,
+          "maxFiles": 5
+        }
+      ]
+    },
+    "sql": {
+      "preloadConnections": ["sqlite:bluetooth-scanner.db"]
+    }
   }
 }

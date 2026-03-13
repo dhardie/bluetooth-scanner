@@ -30,8 +30,9 @@ pub async fn get_settings(state: State<'_, ManagedState>) -> Result<Settings, St
 
 #[tauri::command]
 pub async fn get_activity_log(state: State<'_, ManagedState>) -> Result<Vec<serde_json::Value>, String> {
-    let data = state.0.store_data.read().await;
-    let log: Vec<serde_json::Value> = data.activity_log.iter()
+    // Fetch directly from SQLite for up-to-date data
+    let entries = store::get_activity_log_db(&state.0.store_path, 500)?;
+    let log: Vec<serde_json::Value> = entries.iter()
         .map(|e| serde_json::to_value(e).unwrap_or_default())
         .collect();
     Ok(log)
@@ -65,7 +66,7 @@ pub async fn add_to_list(
     device_name: String,
     list_type: String,
 ) -> Result<Lists, String> {
-    println!("[RUST] add_to_list called: device_id={}, device_name={}, list_type={}", device_id, device_name, list_type);
+    log::info!("add_to_list: device_id={}, device_name={}, list_type={}", device_id, device_name, list_type);
     
     let now = now_ms();
     
@@ -85,29 +86,18 @@ pub async fn add_to_list(
     };
     
     match list_type.as_str() {
-        "blacklist" => { 
-            data.lists.blacklist.insert(device_id.clone(), entry); 
-            println!("[RUST] Added to blacklist. Blacklist now has {} items", data.lists.blacklist.len());
-        }
+        "blacklist" => { data.lists.blacklist.insert(device_id.clone(), entry); }
         "greylist" => { data.lists.greylist.insert(device_id.clone(), entry); }
         "whitelist" => { data.lists.whitelist.insert(device_id.clone(), entry); }
         _ => return Err(format!("Invalid list type: {}", list_type)),
     }
     
     let lists = data.lists.clone();
-    
-    println!("[RUST] Saving store to {:?}", state.0.store_path);
-    match store::save_store(&state.0.store_path, &data) {
-        Ok(_) => println!("[RUST] Store saved successfully"),
-        Err(e) => {
-            println!("[RUST] Store save FAILED: {}", e);
-            return Err(e);
-        }
-    }
+    store::save_store(&state.0.store_path, &data).map_err(|e| e.to_string())?;
     drop(data);
     
-    println!("[RUST] Emitting lists-updated event");
     let _ = handle.emit("lists-updated", &lists);
+    log::info!("Device {} added to {}", device_id, list_type);
     Ok(lists)
 }
 
@@ -148,7 +138,6 @@ pub async fn move_to_list(
 ) -> Result<Lists, String> {
     let mut data = state.0.store_data.write().await;
     
-    // Get device info from old list
     let entry = match from_list.as_str() {
         "blacklist" => data.lists.blacklist.remove(&device_id),
         "greylist" => data.lists.greylist.remove(&device_id),
@@ -189,7 +178,6 @@ pub async fn bulk_add_to_list(
         
         if id.is_empty() { continue; }
         
-        // Remove from all lists
         data.lists.blacklist.remove(&id);
         data.lists.greylist.remove(&id);
         data.lists.whitelist.remove(&id);
@@ -226,15 +214,9 @@ pub async fn update_device_name(
 ) -> Result<Lists, String> {
     let mut data = state.0.store_data.write().await;
     
-    if let Some(entry) = data.lists.blacklist.get_mut(&device_id) {
-        entry.name = name.clone();
-    }
-    if let Some(entry) = data.lists.greylist.get_mut(&device_id) {
-        entry.name = name.clone();
-    }
-    if let Some(entry) = data.lists.whitelist.get_mut(&device_id) {
-        entry.name = name.clone();
-    }
+    if let Some(entry) = data.lists.blacklist.get_mut(&device_id) { entry.name = name.clone(); }
+    if let Some(entry) = data.lists.greylist.get_mut(&device_id) { entry.name = name.clone(); }
+    if let Some(entry) = data.lists.whitelist.get_mut(&device_id) { entry.name = name.clone(); }
     
     let lists = data.lists.clone();
     store::save_store(&state.0.store_path, &data).map_err(|e| e.to_string())?;
@@ -256,6 +238,7 @@ pub async fn update_settings(
     let mut data = state.0.store_data.write().await;
     data.settings = settings.clone();
     store::save_store(&state.0.store_path, &data).map_err(|e| e.to_string())?;
+    log::info!("Settings updated");
     Ok(settings)
 }
 
@@ -264,12 +247,16 @@ pub async fn clear_activity_log(
     handle: tauri::AppHandle,
     state: State<'_, ManagedState>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    // Clear from SQLite
+    store::clear_activity_log_db(&state.0.store_path)?;
+    
+    // Clear in-memory cache
     let mut data = state.0.store_data.write().await;
     data.activity_log.clear();
-    store::save_store(&state.0.store_path, &data).map_err(|e| e.to_string())?;
     drop(data);
     
     let _ = handle.emit("activity-log-updated", Vec::<serde_json::Value>::new());
+    log::info!("Activity log cleared");
     Ok(vec![])
 }
 
@@ -284,6 +271,7 @@ pub async fn start_scanning(
 ) -> Result<bool, String> {
     bluetooth::start_scanning(&state.0).await?;
     let _ = handle.emit("scanning-state", true);
+    log::info!("Scanning started");
     Ok(true)
 }
 
@@ -294,6 +282,7 @@ pub async fn stop_scanning(
 ) -> Result<bool, String> {
     bluetooth::stop_scanning(&state.0).await?;
     let _ = handle.emit("scanning-state", false);
+    log::info!("Scanning stopped");
     Ok(false)
 }
 
@@ -369,7 +358,7 @@ pub async fn add_location(
         _ => return Err("No coordinates available".to_string()),
     };
     
-    let id = format!("loc-{}-{}", now_ms(), uuid::Uuid::new_v4().to_string()[..5].to_string());
+    let id = format!("loc-{}-{}", now_ms(), &uuid::Uuid::new_v4().to_string()[..5]);
     
     let new_loc = Location {
         id: id.clone(),
@@ -388,6 +377,7 @@ pub async fn add_location(
     drop(data);
     
     let _ = handle.emit("location-changed", serde_json::json!({ "id": id, "name": name }));
+    log::info!("Location added: {} ({:.4}, {:.4})", name, lat, lon);
     
     Ok(serde_json::json!({
         "locations": locations,
@@ -456,4 +446,157 @@ pub async fn refresh_location(
         coords: data.current_coords.clone(),
         is_unknown: data.current_location.is_none(),
     })
+}
+
+// ============================================================
+// ANALYTICS & STATS
+// ============================================================
+
+#[tauri::command]
+pub async fn get_device_stats(
+    state: State<'_, ManagedState>,
+    device_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    store::get_device_stats_db(&state.0.store_path, &device_id)
+}
+
+#[tauri::command]
+pub async fn get_all_device_stats(
+    state: State<'_, ManagedState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    store::get_all_device_stats(&state.0.store_path)
+}
+
+#[tauri::command]
+pub async fn get_rssi_history(
+    state: State<'_, ManagedState>,
+    device_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    // First check in-memory history for recent readings
+    let in_memory = {
+        let history = state.0.rssi_history.read().await;
+        history.get(&device_id).cloned()
+    };
+    
+    if let Some(readings) = in_memory {
+        if !readings.is_empty() {
+            return Ok(readings.iter().map(|r| serde_json::json!({
+                "timestamp": r.timestamp,
+                "rssi": r.rssi
+            })).collect());
+        }
+    }
+    
+    // Fall back to SQLite
+    let history = store::get_rssi_history_db(&state.0.store_path, &device_id, limit.unwrap_or(60))?;
+    Ok(history.iter().map(|(ts, rssi)| serde_json::json!({
+        "timestamp": ts,
+        "rssi": rssi
+    })).collect())
+}
+
+#[tauri::command]
+pub async fn get_companions(
+    state: State<'_, ManagedState>,
+    device_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    store::get_companions_db(&state.0.store_path, &device_id)
+}
+
+#[tauri::command]
+pub async fn get_analytics_summary(
+    state: State<'_, ManagedState>,
+) -> Result<serde_json::Value, String> {
+    let data = state.0.store_data.read().await;
+    let discovered_count = state.0.discovered_devices.read().await.len();
+    let device_states = state.0.device_states.read().await;
+    
+    let devices_online = device_states.values().filter(|s| s.online).count();
+    let total_tracked = data.lists.whitelist.len() + data.lists.greylist.len();
+    
+    drop(device_states);
+    drop(data);
+    
+    // Get aggregate stats from SQLite
+    let all_stats = store::get_all_device_stats(&state.0.store_path).unwrap_or_default();
+    
+    let total_sessions: i64 = all_stats.iter()
+        .filter_map(|s| s["totalSessions"].as_i64())
+        .sum();
+    
+    let total_duration_ms: i64 = all_stats.iter()
+        .filter_map(|s| s["totalDurationMs"].as_i64())
+        .sum();
+    
+    let avg_session_ms = if total_sessions > 0 {
+        total_duration_ms / total_sessions
+    } else {
+        0
+    };
+    
+    let most_seen_device = all_stats.first()
+        .and_then(|s| s["deviceName"].as_str().map(String::from));
+    
+    // Get DB file size
+    let db_size = std::fs::metadata(&state.0.store_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    
+    // Build location frequency from recent activity log
+    let entries = store::get_activity_log_db(&state.0.store_path, 1000).unwrap_or_default();
+    let mut location_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for entry in &entries {
+        if let Some(loc) = &entry.location_name {
+            if !loc.is_empty() {
+                *location_counts.entry(loc.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    let most_seen_location = location_counts.into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(loc, _)| loc);
+    
+    Ok(serde_json::json!({
+        "totalDevicesSeen": discovered_count,
+        "totalTrackedDevices": total_tracked,
+        "totalSessions": total_sessions,
+        "totalTimTrackedMs": total_duration_ms,
+        "mostSeenDevice": most_seen_device,
+        "mostSeenLocation": most_seen_location,
+        "avgSessionDurationMs": avg_session_ms,
+        "devicesOnlineNow": devices_online,
+        "dbSizeBytes": db_size,
+        "deviceStatCount": all_stats.len()
+    }))
+}
+
+// ============================================================
+// EXPORT
+// ============================================================
+
+#[tauri::command]
+pub async fn export_activity_log_csv(
+    state: State<'_, ManagedState>,
+) -> Result<String, String> {
+    log::info!("Exporting activity log as CSV");
+    store::export_activity_log_csv(&state.0.store_path)
+}
+
+#[tauri::command]
+pub async fn export_devices_json(
+    state: State<'_, ManagedState>,
+) -> Result<String, String> {
+    let data = state.0.store_data.read().await;
+    let export = serde_json::json!({
+        "exportedAt": now_ms(),
+        "whitelist": data.lists.whitelist,
+        "greylist": data.lists.greylist,
+        "blacklist": data.lists.blacklist,
+        "locations": data.locations,
+        "settings": data.settings
+    });
+    
+    serde_json::to_string_pretty(&export)
+        .map_err(|e| format!("Failed to serialize: {}", e))
 }

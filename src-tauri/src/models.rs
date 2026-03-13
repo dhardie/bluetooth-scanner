@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::broadcast;
 use std::path::PathBuf;
 
 // ============================================================
@@ -253,7 +252,26 @@ pub struct DeviceFootprint {
 }
 
 // ============================================================
-// PERSISTENT STORE DATA
+// ANALYTICS
+// ============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyticsSummary {
+    pub total_devices_seen: usize,
+    pub total_tracked_devices: usize,
+    pub total_sessions: u64,
+    pub total_time_tracked_ms: u64,
+    pub most_seen_device: Option<String>,
+    pub most_seen_location: Option<String>,
+    pub avg_session_duration_ms: u64,
+    pub devices_online_now: usize,
+    pub scan_uptime_ms: u64,
+    pub db_size_bytes: u64,
+}
+
+// ============================================================
+// PERSISTENT STORE DATA (in-memory cache)
 // ============================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -311,17 +329,7 @@ pub struct DeviceGroup {
 }
 
 // ============================================================
-// SSE MESSAGE (for API server broadcast)
-// ============================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SseMessage {
-    pub event_type: String,
-    pub data: serde_json::Value,
-}
-
-// ============================================================
-// APP STATE (shared across threads)
+// APP STATE (shared across threads) - No SSE channel needed
 // ============================================================
 
 pub struct AppState {
@@ -333,7 +341,6 @@ pub struct AppState {
     pub rssi_history: RwLock<HashMap<String, Vec<RssiReading>>>,
     pub active_sessions: RwLock<HashMap<String, ActiveSession>>,
     pub bluetooth_state: RwLock<String>,
-    pub sse_tx: broadcast::Sender<SseMessage>,
     pub adapter: RwLock<Option<btleplug::platform::Adapter>>,
     pub companion_history: RwLock<HashMap<String, HashMap<String, CompanionEntry>>>,
     pub co_location_history: RwLock<HashMap<String, HashMap<String, u32>>>,

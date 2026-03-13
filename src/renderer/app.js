@@ -8,6 +8,8 @@ let currentWifi = null;
 let isScanning = false;
 let bulkMode = false;
 let selectedDevices = new Set();
+let analyticsSummary = {};
+let allDeviceStats = [];
 
 // DOM Elements
 const bluetoothStatus = document.getElementById('bluetooth-status');
@@ -56,8 +58,8 @@ function formatRelativeTime(timestamp) {
 }
 
 // Tab switching with hash anchors + hotkeys
-const TAB_NAMES = ['devices', 'whitelist', 'greylist', 'blacklist', 'log', 'settings'];
-const TAB_HOTKEYS = { '1': 'devices', '2': 'whitelist', '3': 'greylist', '4': 'blacklist', '5': 'log', '6': 'settings' };
+const TAB_NAMES = ['devices', 'whitelist', 'greylist', 'blacklist', 'log', 'analytics', 'settings'];
+const TAB_HOTKEYS = { '1': 'devices', '2': 'whitelist', '3': 'greylist', '4': 'blacklist', '5': 'log', '6': 'analytics', '7': 'settings' };
 
 function switchTab(tabName) {
   if (!TAB_NAMES.includes(tabName)) return;
@@ -80,6 +82,8 @@ function switchTab(tabName) {
     doRenderDevices();
   } else if (tabName === 'log') {
     renderActivityLog();
+  } else if (tabName === 'analytics') {
+    loadAnalytics();
   }
 }
 
@@ -127,7 +131,7 @@ async function init() {
   locations = await window.api.getLocations();
   const locInfo = await window.api.getCurrentLocation();
   currentLocation = locInfo;
-  currentWifi = locInfo.wifi;
+  currentWifi = locInfo?.wifi;
   
   // Get current bluetooth and scanning state (fixes "stuck on initializing")
   const btState = await window.api.getBluetoothState();
@@ -332,6 +336,30 @@ function setupEventListeners() {
     });
   });
   
+  // Tray scan toggle
+  window.api.onTrayScanToggle && window.api.onTrayScanToggle(async () => {
+    if (isScanning) {
+      await window.api.stopScanning();
+    } else {
+      await window.api.startScanning();
+    }
+  });
+
+  // Export CSV button
+  document.getElementById('export-csv-btn')?.addEventListener('click', async () => {
+    await exportCsv();
+  });
+
+  // Export JSON button
+  document.getElementById('export-json-btn')?.addEventListener('click', async () => {
+    await exportJson();
+  });
+
+  // Analytics refresh button
+  document.getElementById('analytics-refresh-btn')?.addEventListener('click', async () => {
+    await loadAnalytics();
+  });
+
   // IPC events from main process
   window.api.onBluetoothState((state) => {
     bluetoothStatus.textContent = state;
@@ -1250,6 +1278,286 @@ window.addToList = addToList;
 window.removeFromList = removeFromList;
 window.moveToList = moveToList;
 window.updateDeviceName = updateDeviceName;
+
+// ============================================================
+// ANALYTICS
+// ============================================================
+
+async function loadAnalytics() {
+  try {
+    analyticsSummary = await window.api.getAnalyticsSummary();
+    allDeviceStats = await window.api.getAllDeviceStats();
+    renderAnalytics();
+  } catch(e) {
+    console.error('Failed to load analytics:', e);
+  }
+}
+
+function renderAnalytics() {
+  const s = analyticsSummary;
+  
+  // Update summary cards
+  document.getElementById('stat-devices-seen').textContent = s.totalDevicesSeen ?? '—';
+  document.getElementById('stat-tracked').textContent = s.totalTrackedDevices ?? '—';
+  document.getElementById('stat-online-now').textContent = s.devicesOnlineNow ?? '—';
+  document.getElementById('stat-sessions').textContent = s.totalSessions ?? '—';
+  document.getElementById('stat-avg-session').textContent = s.avgSessionDurationMs 
+    ? formatSessionDuration(s.avgSessionDurationMs) : '—';
+  document.getElementById('stat-db-size').textContent = s.dbSizeBytes 
+    ? formatBytes(s.dbSizeBytes) : '—';
+  
+  // Highlights
+  document.getElementById('stat-most-device').textContent = s.mostSeenDevice || 'None yet';
+  document.getElementById('stat-most-location').textContent = s.mostSeenLocation || 'None yet';
+  
+  // Device stats table
+  const tableEl = document.getElementById('device-stats-table');
+  if (!allDeviceStats || allDeviceStats.length === 0) {
+    tableEl.innerHTML = '<p class="empty-state">No device statistics yet. Track devices to see stats here.</p>';
+    return;
+  }
+  
+  tableEl.innerHTML = `
+    <table class="stats-table">
+      <thead>
+        <tr>
+          <th>Device</th>
+          <th>Type</th>
+          <th>Sessions</th>
+          <th>Total Time</th>
+          <th>Dropouts</th>
+          <th>Last Seen</th>
+          <th>Locations</th>
+          <th>Signal</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${allDeviceStats.map(d => {
+          const locations = (() => {
+            try { return JSON.parse(d.locationsSeen || '[]'); } catch { return []; }
+          })();
+          const badge = d.listType === 'whitelist' ? '🔔' : (d.listType === 'greylist' ? '📝' : '');
+          const lastSeen = d.lastSeen ? formatRelativeTime(d.lastSeen) : 'Never';
+          
+          return `<tr class="stats-row" data-device-id="${escapeHtml(d.deviceId)}" data-device-name="${escapeHtml(d.deviceName)}">
+            <td class="stats-device-name">${badge} ${escapeHtml(d.deviceName)}</td>
+            <td>${d.listType || '—'}</td>
+            <td>${d.totalSessions}</td>
+            <td>${d.totalDurationMs ? formatSessionDuration(d.totalDurationMs) : '—'}</td>
+            <td>${d.totalDropouts > 0 ? `⚠️ ${d.totalDropouts}` : '0'}</td>
+            <td>${lastSeen}</td>
+            <td>${locations.length > 0 ? locations.slice(0,2).map(l => escapeHtml(l)).join(', ') : '—'}</td>
+            <td><button class="btn btn-tiny btn-secondary" data-chart-device="${escapeHtml(d.deviceId)}" data-chart-name="${escapeHtml(d.deviceName)}">📡</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+  
+  // RSSI chart buttons
+  tableEl.querySelectorAll('[data-chart-device]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const deviceId = btn.dataset.chartDevice;
+      const deviceName = btn.dataset.chartName;
+      await showRssiChart(deviceId, deviceName);
+    });
+  });
+}
+
+async function showRssiChart(deviceId, deviceName) {
+  const section = document.getElementById('rssi-chart-section');
+  const nameEl = document.getElementById('rssi-chart-device-name');
+  const canvas = document.getElementById('rssi-chart');
+  
+  section.style.display = 'block';
+  nameEl.textContent = deviceName;
+  
+  const history = await window.api.getRssiHistory(deviceId, 60);
+  
+  if (!history || history.length === 0) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#666';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No RSSI history available', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  
+  drawRssiChart(canvas, history);
+  section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function drawRssiChart(canvas, history) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  const PAD = { top: 10, right: 20, bottom: 25, left: 45 };
+  const chartW = W - PAD.left - PAD.right;
+  const chartH = H - PAD.top - PAD.bottom;
+  
+  ctx.clearRect(0, 0, W, H);
+  
+  // Background
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, W, H);
+  
+  // Min/max RSSI (clamped)
+  const rssiMin = -100;
+  const rssiMax = -40;
+  const rssiRange = rssiMax - rssiMin;
+  
+  function rssiToY(rssi) {
+    const clamped = Math.max(rssiMin, Math.min(rssiMax, rssi));
+    return PAD.top + chartH - ((clamped - rssiMin) / rssiRange) * chartH;
+  }
+  
+  // Draw reference lines
+  const refLines = [
+    { rssi: -65, label: 'Strong', color: 'rgba(34,197,94,0.3)' },
+    { rssi: -80, label: 'Medium', color: 'rgba(234,179,8,0.3)' },
+  ];
+  
+  ctx.setLineDash([4, 4]);
+  refLines.forEach(({ rssi, label, color }) => {
+    const y = rssiToY(rssi);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD.left, y);
+    ctx.lineTo(PAD.left + chartW, y);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${rssi}`, 2, y + 3);
+  });
+  ctx.setLineDash([]);
+  
+  // Y axis labels
+  ctx.fillStyle = '#666';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  [-40, -60, -80, -100].forEach(rssi => {
+    const y = rssiToY(rssi);
+    ctx.fillText(`${rssi}`, PAD.left - 4, y + 3);
+  });
+  
+  // Draw RSSI line
+  const points = history.map((h, i) => ({
+    x: PAD.left + (i / Math.max(history.length - 1, 1)) * chartW,
+    y: rssiToY(h.rssi),
+    rssi: h.rssi
+  }));
+  
+  // Gradient fill under the line
+  const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + chartH);
+  gradient.addColorStop(0, 'rgba(59,130,246,0.4)');
+  gradient.addColorStop(1, 'rgba(59,130,246,0)');
+  
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, PAD.top + chartH);
+  points.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(points[points.length-1].x, PAD.top + chartH);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+  
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  points.forEach((p, i) => {
+    if (i > 0) ctx.lineTo(p.x, p.y);
+  });
+  ctx.strokeStyle = '#3b82f6';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  
+  // Color dots by signal strength
+  points.forEach(p => {
+    const color = p.rssi > -65 ? '#22c55e' : (p.rssi > -80 ? '#eab308' : '#ef4444');
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  });
+  
+  // X axis: first and last timestamps
+  if (history.length >= 2) {
+    ctx.fillStyle = '#555';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'left';
+    const firstTime = new Date(history[0].timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    ctx.fillText(firstTime, PAD.left, H - 4);
+    ctx.textAlign = 'right';
+    const lastTime = new Date(history[history.length-1].timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    ctx.fillText(lastTime, PAD.left + chartW, H - 4);
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+// ============================================================
+// EXPORT
+// ============================================================
+
+async function exportCsv() {
+  const btn = document.getElementById('export-csv-btn');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  
+  try {
+    const csv = await window.api.exportActivityLogCsv();
+    if (!csv) {
+      alert('No activity log data to export.');
+      return;
+    }
+    downloadText(csv, 'bluetooth-scanner-activity.csv', 'text/csv');
+  } catch(e) {
+    console.error('Export CSV failed:', e);
+    alert('Export failed: ' + e);
+  } finally {
+    if (btn) { btn.textContent = '📥 Export CSV'; btn.disabled = false; }
+  }
+}
+
+async function exportJson() {
+  const btn = document.getElementById('export-json-btn');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  
+  try {
+    const json = await window.api.exportDevicesJson();
+    if (!json) {
+      alert('No device data to export.');
+      return;
+    }
+    downloadText(json, 'bluetooth-scanner-devices.json', 'application/json');
+  } catch(e) {
+    console.error('Export JSON failed:', e);
+    alert('Export failed: ' + e);
+  } finally {
+    if (btn) { btn.textContent = '📤 Export JSON'; btn.disabled = false; }
+  }
+}
+
+function downloadText(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Make analytics functions global
+window.loadAnalytics = loadAnalytics;
+window.showRssiChart = showRssiChart;
 
 // Start the app - wait for Tauri bridge to be ready
 function startApp() {

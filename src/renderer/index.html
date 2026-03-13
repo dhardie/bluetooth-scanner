@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: tauri: http://ipc.localhost">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: tauri: http://ipc.localhost">
   <title>Bluetooth Beacon Scanner</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -25,7 +25,8 @@
       <button class="tab" data-tab="greylist" title="Press 3">📝 Logged <span id="tab-greylist-count" class="tab-badge"></span></button>
       <button class="tab" data-tab="blacklist" title="Press 4">🚫 Hidden <span id="tab-blacklist-count" class="tab-badge"></span></button>
       <button class="tab" data-tab="log" title="Press 5">📊 Activity</button>
-      <button class="tab" data-tab="settings" title="Press 6">⚙️ Settings</button>
+      <button class="tab" data-tab="analytics" title="Press 6">📈 Analytics</button>
+      <button class="tab" data-tab="settings" title="Press 7">⚙️ Settings</button>
     </nav>
     
     <main>
@@ -39,7 +40,7 @@
             <button class="btn btn-secondary btn-small tab-refresh" data-refresh="devices" title="Refresh device list">🔄</button>
           </div>
         </div>
-        <!-- Bulk Action Bar (shown when in bulk mode) -->
+        <!-- Bulk Action Bar -->
         <div id="bulk-actions" class="bulk-action-bar hidden">
           <div class="bulk-left">
             <button class="btn btn-small btn-secondary" id="select-all">☑️ Select All</button>
@@ -98,10 +99,10 @@
             <button id="unhide-all" class="btn btn-success btn-small">👁️ Unhide All</button>
           </div>
         </div>
-        <span class="list-description">These devices are hidden from the Nearby list. Click "Unhide" to show them again.</span>
+        <span class="list-description">These devices are hidden from the Nearby list.</span>
         <div class="list-count"><span id="blacklist-count">0</span> hidden devices</div>
         <div id="blacklist-list" class="device-list">
-          <p class="empty-state">No hidden devices. Devices you hide from Nearby will appear here.</p>
+          <p class="empty-state">No hidden devices.</p>
         </div>
       </section>
       
@@ -111,11 +112,84 @@
           <h2>Activity Log</h2>
           <div class="header-actions">
             <button class="btn btn-secondary btn-small tab-refresh" data-refresh="log" title="Refresh activity log">🔄</button>
-            <button id="clear-log" class="btn btn-secondary btn-small">Clear Log</button>
+            <button id="export-csv-btn" class="btn btn-secondary btn-small">📥 Export CSV</button>
+            <button id="clear-log" class="btn btn-secondary btn-small">🗑️ Clear Log</button>
           </div>
         </div>
         <div id="activity-log" class="log-list">
           <p class="empty-state">No activity recorded yet.</p>
+        </div>
+      </section>
+
+      <!-- Analytics Tab -->
+      <section id="analytics-tab" class="tab-content">
+        <div class="section-header">
+          <h2>📈 Analytics</h2>
+          <div class="header-actions">
+            <button class="btn btn-secondary btn-small" id="analytics-refresh-btn">🔄 Refresh</button>
+            <button class="btn btn-secondary btn-small" id="export-json-btn">📤 Export JSON</button>
+          </div>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="analytics-cards">
+          <div class="analytics-card">
+            <div class="card-value" id="stat-devices-seen">—</div>
+            <div class="card-label">Devices Seen</div>
+          </div>
+          <div class="analytics-card">
+            <div class="card-value" id="stat-tracked">—</div>
+            <div class="card-label">Tracked Devices</div>
+          </div>
+          <div class="analytics-card">
+            <div class="card-value" id="stat-online-now">—</div>
+            <div class="card-label">Online Now</div>
+          </div>
+          <div class="analytics-card">
+            <div class="card-value" id="stat-sessions">—</div>
+            <div class="card-label">Total Sessions</div>
+          </div>
+          <div class="analytics-card">
+            <div class="card-value" id="stat-avg-session">—</div>
+            <div class="card-label">Avg Session</div>
+          </div>
+          <div class="analytics-card">
+            <div class="card-value" id="stat-db-size">—</div>
+            <div class="card-label">Database Size</div>
+          </div>
+        </div>
+
+        <!-- Most Seen -->
+        <div class="analytics-highlights">
+          <div class="highlight-item">
+            <span class="highlight-label">🏆 Most tracked device:</span>
+            <span class="highlight-value" id="stat-most-device">—</span>
+          </div>
+          <div class="highlight-item">
+            <span class="highlight-label">📍 Most frequent location:</span>
+            <span class="highlight-value" id="stat-most-location">—</span>
+          </div>
+        </div>
+
+        <!-- Device Stats Table -->
+        <div class="analytics-section">
+          <h3>Device History</h3>
+          <div id="device-stats-table" class="device-stats-table">
+            <p class="empty-state">No device statistics yet. Track devices to see stats here.</p>
+          </div>
+        </div>
+
+        <!-- RSSI Chart for Selected Device -->
+        <div class="analytics-section" id="rssi-chart-section" style="display:none">
+          <h3>📡 Signal History: <span id="rssi-chart-device-name">—</span></h3>
+          <div class="rssi-chart-container">
+            <canvas id="rssi-chart" width="600" height="120"></canvas>
+            <div class="rssi-legend">
+              <span class="rssi-legend-item strong">Strong (&gt; -65 dBm)</span>
+              <span class="rssi-legend-item medium">Medium (-65 to -80 dBm)</span>
+              <span class="rssi-legend-item weak">Weak (&lt; -80 dBm)</span>
+            </div>
+          </div>
         </div>
       </section>
       
@@ -135,13 +209,13 @@
           <div id="location-list" class="location-list"></div>
           
           <div class="add-location-form">
-            <input type="text" id="new-location-name" placeholder="Location name (e.g., Home, Office, French House)">
+            <input type="text" id="new-location-name" placeholder="Location name (e.g., Home, Office)">
             <input type="number" id="new-location-radius" placeholder="Radius km" value="5" min="0.1" max="100" step="0.5" style="width: 80px;">
             <button class="btn btn-primary btn-small" id="add-location-btn">📍 Save Current Location</button>
           </div>
           
           <div class="wifi-setup">
-            <p class="hint">Locations are detected via IP geolocation. Save your current location and set a radius (in km) - when you're within that radius, this location will be auto-detected.</p>
+            <p class="hint">Locations are detected via IP geolocation. Save your current location and set a radius (in km) — when you're within that radius, this location will be auto-detected.</p>
           </div>
         </div>
         
@@ -186,6 +260,13 @@
                 Minimize to menu bar when closing window
               </label>
             </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>🗄️ Database</h3>
+          <div class="settings-form">
+            <p class="hint" id="db-info-text">SQLite database for persistent storage.</p>
           </div>
         </div>
         
